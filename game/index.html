@@ -78,6 +78,7 @@ function initScene() {
   scene.fog = new THREE.Fog(0x070b1e, 30, 110);
 
   camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.1, 300);
+  camera.up.set(0, 1, 0); // страховка от инверсии экрана при нестандартном up-векторе
   camera.position.set(0, 4.2, -9); // сзади игрока (трасса уходит в +z) — D ведёт вправо на экране
 
   renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -247,11 +248,11 @@ function animate() {
     speed = Math.min(55, speed + dt * .55);
     const dz = speed * dt;
 
-    // движение влево-вправо
-    let targetX = player.position.x;
-    if (keys['ArrowLeft'] || keys['KeyA']) targetX -= 9 * dt * Math.max(1, speed / 20);
-    if (keys['ArrowRight'] || keys['KeyD']) targetX += 9 * dt * Math.max(1, speed / 20);
-    player.position.x = THREE.MathUtils.clamp(targetX, -LANE_W, LANE_W);
+    // движение влево-вправо: D/→ двигает куб вправо по экрану (x+), A/← — влево (x-)
+    const mv = 9 * dt * Math.max(1, speed / 20);
+    if (keys['ArrowRight'] || keys['KeyD']) player.position.x += mv;
+    else if (keys['ArrowLeft'] || keys['KeyA']) player.position.x -= mv;
+    player.position.x = THREE.MathUtils.clamp(player.position.x, -LANE_W, LANE_W);
 
     // гравитация и прыжок
     if (keys['Space'] && grounded) { playerVelY = 9.5; grounded = false; }
