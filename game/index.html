@@ -78,7 +78,7 @@ function initScene() {
   scene.fog = new THREE.Fog(0x070b1e, 30, 110);
 
   camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.1, 300);
-  camera.position.set(0, 4.2, -7);
+  camera.position.set(0, 4.2, -9); // сзади игрока (трасса уходит в +z) — D ведёт вправо на экране
 
   renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setSize(innerWidth, innerHeight);
