@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cube Runner — 3D игра</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #000; font-family: 'Segoe UI', Arial, sans-serif; }
+  #ui { position: fixed; inset: 0; pointer-events: none; z-index: 5; color: #fff; text-shadow: 0 2px 8px rgba(0,0,0,.7); }
+  .hud { position: absolute; top: 16px; left: 20px; display: flex; gap: 28px; font-size: 20px; font-weight: 600; letter-spacing: .5px; }
+  .hud span b { color: #ffd54a; font-size: 24px; }
+  #hint { position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%); font-size: 13px; opacity: .65; }
+  #overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(5,8,20,.82); z-index: 10; backdrop-filter: blur(6px); }
+  #overlay.hidden { display: none; }
+  .panel { text-align: center; color: #fff; max-width: 560px; padding: 40px 48px; border-radius: 20px;
+           background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.12); box-shadow: 0 20px 80px rgba(0,0,0,.6); }
+  .panel h1 { font-size: 44px; margin-bottom: 8px; background: linear-gradient(90deg,#ffd54a,#ff6b6b,#8a5cff); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .panel p { font-size: 16px; line-height: 1.6; opacity: .85; margin-bottom: 22px; }
+  .keys { display: inline-grid; grid-template-columns: auto auto; gap: 6px 18px; text-align: left; font-size: 14px; margin-bottom: 26px; }
+  .keys kbd { background:#222a44; border:1px solid #445; border-bottom-width:3px; border-radius:6px; padding:2px 10px; font-family:monospace; }
+  .btn { pointer-events: auto; cursor: pointer; border: none; border-radius: 12px; padding: 14px 44px; font-size: 20px; font-weight: 700;
+         color: #1a1000; background: linear-gradient(135deg,#ffd54a,#ff9d2e); box-shadow: 0 6px 24px rgba(255,170,60,.45); transition: transform .12s; }
+  .btn:hover { transform: scale(1.06); }
+  #finalScore { font-size: 26px; color: #ffd54a; margin-bottom: 18px; }
+</style>
+</head>
+<body>
+<div id="ui">
+  <div class="hud">
+    <span>СЧЁТ <b id="score">0</b></span>
+    <span>РЕКОРД <b id="best">0</b></span>
+    <span>СКОРОСТЬ <b id="speed">0</b> км/ч</span>
+  </div>
+  <div id="hint">← → / A D — движение · ПРОБЕЛ — прыжок · R — рестарт</div>
+</div>
+
+<div id="overlay">
+  <div class="panel">
+    <h1 id="title">CUBE RUNNER</h1>
+    <p id="subtitle">Беги по неоновой трассе, уворачивайся от красных кубов,<br>собирай золотые монеты и набирай очки!</p>
+    <div class="keys">
+      <kbd>A / D или ← →</kbd><span>движение по полосам</span>
+      <kbd>ПРОБЕЛ</kbd><span>прыжок (низкие кубы можно перепрыгивать)</span>
+      <kbd>R</kbd><span>начать заново</span>
+    </div>
+    <div id="finalScore" style="display:none"></div>
+    <button class="btn" id="startBtn">ИГРАТЬ</button>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script>
+// ============================================================
+// CUBE RUNNER — бесконечный 3D-раннер на Three.js
+// Игрок управляет светящимся кубом на неоновой трассе:
+// уклоняется от препятствий, собирает монеты, получает очки.
+// ============================================================
+
+const LANE_W = 2.2;            // полуширина зоны движения
+const CHUNK = 20;              // длина сегмента дороги
+const AHEAD = 6;               // сколько сегментов держим
+
+let scene, camera, renderer, clock, playerLight;
+let player, playerVelY = 0, grounded = true;
+let roadChunks = [], obstacles = [], coins = [];
+let score = 0, best = +(localStorage.getItem('cubeRunnerBest') || 0), speed = 18;
+let running = false, dead = false, spawnDist = 0;
+const keys = {};
+
+const $ = id => document.getElementById(id);
+$('best').textContent = best;
+
+// ---------- инициализация сцены ----------
+function initScene() {
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x070b1e);
+  scene.fog = new THREE.Fog(0x070b1e, 30, 110);
+
+  camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.1, 300);
+  camera.position.set(0, 4.2, -7);
+
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  document.body.appendChild(renderer.domElement);
+
+  // свет
+  scene.add(new THREE.HemisphereLight(0x8899ff, 0x223344, 0.9));
+  const dl = new THREE.DirectionalLight(0xffffff, 0.8);
+  dl.position.set(5, 10, -4);
+  scene.add(dl);
+  playerLight = new THREE.PointLight(0xffd54a, 1.2, 12);
+  playerLight.position.set(0, 3, 0);
+  scene.add(playerLight);
+
+  // звёзды
+  const sg = new THREE.BufferGeometry();
+  const pos = [];
+  for (let i = 0; i < 600; i++) {
+    pos.push((Math.random() - .5) * 260, 20 + Math.random() * 90, 30 + Math.random() * 180);
+  }
+  sg.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  scene.add(new THREE.Points(sg, new THREE.PointsMaterial({ color: 0xbbccff, size: .5, sizeAttenuation: true })));
+
+  // «луна»
+  const moon = new THREE.Mesh(new THREE.SphereGeometry(6, 24, 24),
+    new THREE.MeshBasicMaterial({ color: 0xfff2c0, fog: false }));
+  moon.position.set(-30, 40, 150);
+  scene.add(moon);
+
+  buildRoad();
+  buildPlayer();
+}
+
+// ---------- дорога: сегменты с неоновыми линиями ----------
+function makeChunk(zStart) {
+  const g = new THREE.Group();
+  const plane = new THREE.Mesh(
+    new THREE.PlaneGeometry(LANE_W * 3 + 4, CHUNK),
+    new THREE.MeshStandardMaterial({ color: 0x10162f, roughness: .9 })
+  );
+  plane.rotation.x = -Math.PI / 2;
+  plane.position.set(0, 0, zStart + CHUNK / 2);
+  g.add(plane);
+
+  // края трассы
+  const edgeMat = new THREE.MeshBasicMaterial({ color: 0x2fd8ff });
+  [-1, 1].forEach(s => {
+    const e = new THREE.Mesh(new THREE.BoxGeometry(.15, .15, CHUNK), edgeMat);
+    e.position.set(s * (LANE_W * 1.5 + .6), .08, zStart + CHUNK / 2);
+    g.add(e);
+  });
+  // разделители полос
+  const laneMat = new THREE.MeshBasicMaterial({ color: 0x8a5cff });
+  [-LANE_W / 2, LANE_W / 2].forEach(x => {
+    for (let i = 0; i < 5; i++) {
+      const d = new THREE.Mesh(new THREE.BoxGeometry(.08, .02, 2.2), laneMat);
+      d.position.set(x, .05, zStart + i * 4 + 2);
+      g.add(d);
+    }
+  });
+  // поперечные штрихи скорости
+  const tickMat = new THREE.MeshBasicMaterial({ color: 0x1b3a6b });
+  for (let i = 0; i < 4; i++) {
+    const t = new THREE.Mesh(new THREE.BoxGeometry(LANE_W * 3 + 4, .02, .35), tickMat);
+    t.position.set(0, .04, zStart + i * 5 + 2.5);
+    g.add(t);
+  }
+  scene.add(g);
+  return g;
+}
+function buildRoad() {
+  roadChunks.forEach(c => scene.remove(c));
+  roadChunks = [];
+  for (let i = 0; i < AHEAD; i++) roadChunks.push(makeChunk(i * CHUNK - 10));
+}
+
+// ---------- игрок ----------
+function buildPlayer() {
+  if (player) scene.remove(player);
+  player = new THREE.Group();
+  const cube = new THREE.Mesh(
+    new THREE.BoxGeometry(1, 1, 1),
+    new THREE.MeshStandardMaterial({ color: 0x35e0a1, emissive: 0x0f7a52, roughness: .3, metalness: .4 })
+  );
+  cube.position.y = .55;
+  const wire = new THREE.Mesh(
+    new THREE.BoxGeometry(1.15, 1.15, 1.15),
+    new THREE.MeshBasicMaterial({ color: 0xb5ffe3, wireframe: true, transparent: true, opacity: .5 })
+  );
+  wire.position.y = .55;
+  player.add(cube, wire);
+  player.userData.inner = [cube, wire];
+  player.position.set(0, 0, 0);
+  scene.add(player);
+}
+
+// ---------- объекты ----------
+const LANES = [-LANE_W, 0, LANE_W];
+const obsGeo = new THREE.BoxGeometry(1.4, 1.4, 1.4);
+const obsMat = new THREE.MeshStandardMaterial({ color: 0xff4757, emissive: 0x8f1620, roughness: .4 });
+const obsWireMat = new THREE.MeshBasicMaterial({ color: 0xffb3ba, wireframe: true, transparent: true, opacity: .6 });
+const coinGeo = new THREE.CylinderGeometry(.45, .45, .12, 20);
+const coinMat = new THREE.MeshStandardMaterial({ color: 0xffd54a, emissive: 0xa87200, metalness: .8, roughness: .25 });
+
+function addObstacle(z, lane, tall) {
+  const m = new THREE.Mesh(obsGeo, obsMat);
+  m.scale.y = tall ? 1.7 : 1;
+  const h = 1.4 * m.scale.y;
+  m.position.set(LANES[lane], h / 2, z);
+  const w = new THREE.Mesh(obsGeo, obsWireMat);
+  w.scale.copy(m.scale).multiplyScalar(1.08);
+  w.position.copy(m.position);
+  scene.add(m, w);
+  obstacles.push({ mesh: m, wire: w, r: .7, halfH: h / 2, tall });
+}
+function addCoin(z, lane) {
+  const c = new THREE.Mesh(coinGeo, coinMat);
+  c.rotation.z = Math.PI / 2;
+  c.position.set(LANES[lane], 1.0, z);
+  scene.add(c);
+  coins.push({ mesh: c });
+}
+
+// генерация волн объектов
+function spawnWave(z) {
+  const n = 1 + Math.floor(Math.random() * 3);       // 1..3 препятствий
+  const lanesUsed = new Set();
+  for (let i = 0; i < n; i++) {
+    let lane; do { lane = Math.floor(Math.random() * 3); } while (lanesUsed.has(lane));
+    lanesUsed.add(lane);
+    addObstacle(z + Math.random() * 6, lane, Math.random() < .3);
+  }
+  // монеты в свободных полосах
+  for (let lane = 0; lane < 3; lane++) {
+    if (lanesUsed.has(lane)) continue;
+    if (Math.random() < .8) {
+      const cnt = 3 + Math.floor(Math.random() * 4);
+      for (let j = 0; j < cnt; j++) addCoin(z + j * 2.2, lane);
+    }
+  }
+}
+
+// ---------- сброс игры ----------
+function reset() {
+  obstacles.forEach(o => scene.remove(o.mesh, o.wire));
+  coins.forEach(c => scene.remove(c.mesh));
+  obstacles = []; coins = [];
+  score = 0; speed = 18; spawnDist = 0; dead = false;
+  player.position.set(0, 0, 0);
+  playerVelY = 0; grounded = true;
+  $('score').textContent = 0;
+  running = true;
+}
+
+// ---------- основной цикл ----------
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), .05);
+
+  // анимация игрока всегда
+  player.userData.inner.forEach(m => m.rotation.y += dt * 1.5);
+
+  if (running && !dead) {
+    // скорость растёт со временем
+    speed = Math.min(55, speed + dt * .55);
+    const dz = speed * dt;
+
+    // движение влево-вправо
+    let targetX = player.position.x;
+    if (keys['ArrowLeft'] || keys['KeyA']) targetX -= 9 * dt * Math.max(1, speed / 20);
+    if (keys['ArrowRight'] || keys['KeyD']) targetX += 9 * dt * Math.max(1, speed / 20);
+    player.position.x = THREE.MathUtils.clamp(targetX, -LANE_W, LANE_W);
+
+    // гравитация и прыжок
+    if (keys['Space'] && grounded) { playerVelY = 9.5; grounded = false; }
+    playerVelY -= 26 * dt;
+    player.position.y += playerVelY * dt;
+    if (player.position.y <= 0) { player.position.y = 0; playerVelY = 0; grounded = true; }
+
+    // мир «бежит» навстречу
+    moveWorld(-dz);
+    score += dz;
+
+    // спавн новых волн
+    spawnDist += dz;
+    if (spawnDist > 26) { spawnDist = 0; spawnWave(CHUNK * (AHEAD - 1) - 10); }
+
+    // столкновения
+    checkCollisions();
+
+    $('score').textContent = Math.floor(score);
+    $('speed').textContent = Math.round(speed * 3.6);
+  } else {
+    moveWorld(-2 * dt); // лёгкое движение фона в меню
+  }
+
+  // камера следует за игроком
+  camera.position.x += (player.position.x * .55 - camera.position.x) * 6 * dt;
+  camera.position.y = 4.2 + player.position.y * .35;
+  camera.lookAt(player.position.x * .4, 1.2, 14);
+  playerLight.position.set(player.position.x, 2.5 + player.position.y, 1);
+
+  // вращение монет
+  coins.forEach(c => c.mesh.rotation.y += dt * 3);
+
+  renderer.render(scene, camera);
+}
+
+function moveWorld(dz) {
+  roadChunks.forEach(c => { c.position.z += dz; if (c.position.z < -(CHUNK + 10)) c.position.z += CHUNK * AHEAD; });
+  obstacles.forEach(o => { o.mesh.position.z += dz; o.wire.position.z += dz; });
+  coins.forEach(c => c.mesh.position.z += dz);
+  obstacles = obstacles.filter(o => {
+    if (o.mesh.position.z < -8) { scene.remove(o.mesh, o.wire); return false; }
+    return true;
+  });
+  coins = coins.filter(c => {
+    if (c.mesh.position.z < -8) { scene.remove(c.mesh); return false; }
+    return true;
+  });
+}
+
+function checkCollisions() {
+  const px = player.position.x, py = player.position.y;
+  for (const o of obstacles) {
+    const dz = Math.abs(o.mesh.position.z);
+    if (dz < .5 + o.r) {
+      const dx = Math.abs(o.mesh.position.x - px);
+      if (dx < .5 + o.r) {
+        // низкие препятствия можно перепрыгнуть
+        if (!o.tall && py > o.halfH * 2 - .3) continue;
+        gameOver();
+        return;
+      }
+    }
+  }
+  for (let i = coins.length - 1; i >= 0; i--) {
+    const c = coins[i];
+    const d2 = (c.mesh.position.x - px) ** 2 + c.mesh.position.z ** 2 +
+               (c.mesh.position.y - (py + .55)) ** 2;
+    if (d2 < 1.2) {
+      scene.remove(c.mesh);
+      coins.splice(i, 1);
+      score += 25;
+    }
+  }
+}
+
+function gameOver() {
+  dead = true; running = false;
+  flashRed();
+  if (score > best) { best = Math.floor(score); localStorage.setItem('cubeRunnerBest', best); $('best').textContent = best; }
+  $('title').textContent = 'АЙ, ПРОВАЛ!';
+  $('subtitle').innerHTML = 'Куб врезался в препятствие.<br>Ещё разок?';
+  const fs = $('finalScore');
+  fs.style.display = 'block';
+  fs.textContent = `Очки: ${Math.floor(score)}   ·   Рекорд: ${best}`;
+  $('startBtn').textContent = 'ЗАНОВО';
+  setTimeout(() => $('overlay').classList.remove('hidden'), 550);
+}
+
+function flashRed() {
+  const f = new THREE.PointLight(0xff2244, 3, 20);
+  f.position.set(player.position.x, 1.5, 0);
+  scene.add(f);
+  let life = .6;
+  (function fade() {
+    life -= .05; f.intensity = Math.max(0, life * 5);
+    if (life > 0) requestAnimationFrame(fade); else scene.remove(f);
+  })();
+}
+
+// ---------- ввод ----------
+addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (['Space', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
+  if (e.code === 'KeyR' && running) { running = false; reset(); }
+});
+addEventListener('keyup', e => keys[e.code] = false);
+$('startBtn').addEventListener('click', () => { $('overlay').classList.add('hidden'); reset(); });
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// старт
+initScene();
+clock = new THREE.Clock();
+animate();
+</script>
+</body>
+</html>
